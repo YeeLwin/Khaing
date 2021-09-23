@@ -1,0 +1,67 @@
+on:
+  github:
+    branches:
+      only: main
+
+jobs:
+  PrepareModel:
+    resources:
+      instance-type: C3
+    outputs:
+      model:
+        type: dataset
+        with:
+          ref: demo-dataset
+    uses: script@v1
+    with:
+      script: |-
+        pip install gdown 
+        gdown https://drive.google.com/uc?id=1L8P-hpBhZi8Q_1vP2KlQ4N6dvlzpYBvZ -O /outputs/model/vox.pt
+      image: python:3.8
+  ValidateModel:
+    needs:
+      - PrepareModel
+    resources:
+      instance-type: P5000
+    inputs:
+      model: PrepareModel.outputs.model
+      assets:
+        type: dataset
+        with:
+          ref: demo-dataset
+    outputs:
+      results:
+        type: dataset
+        with:
+          ref: demo-dataset
+    uses: script@v1
+    with:
+      script: |-
+        python3 demo.py --relative --adapt_scale \
+          --config config/vox-256.yaml \
+          --checkpoint /inputs/model/vox.pt \
+          --driving_video /app/driving.mp4 \
+          --source_image /app/source.png \
+          --result_video /app/result.mp4
+      image: paperspace/first-order-model
+  CreateDeployment:
+    needs:
+      - ValidateModel
+    resources:
+      instance-type: C3
+    uses: script@v1
+    with:
+      script: |-
+        cat > ./deployment.yaml <<EOF
+        image: paperspace/first-order-model:all
+        port: 8000
+        resources:
+          replicas: 1
+          instanceType: P5000
+        EOF
+        apt update > /dev/null
+        apt-get install -y jq
+        gradient deployments create --name adoro-${RANDOM} --projectId ${PROJECT_ID} --spec ./deployment.yaml |awk '{print $3}'> ./deployment.id
+        gradient deployments get --id $(cat ./deployment.id)|jq '.deploymentSpecs[0].endpointUrl' -r
+
+      image: paperspace/gradient-sdk
